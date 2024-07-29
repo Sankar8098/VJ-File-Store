@@ -1,27 +1,23 @@
-import sys
-import glob
+import re
+import os
+import logging
+import asyncio
 import importlib
 from pathlib import Path
-from pyrogram import Client, idle, __version__
-from pyrogram.raw.all import layer
-import logging
-import logging.config
-from typing import Union, Optional, AsyncGenerator
+from pyrogram import Client, idle, filters
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram.errors import UserNotParticipant, FloodWait
 from aiohttp import web
 from datetime import date, datetime
 import pytz
-import asyncio
-import re
+import glob  # Import the glob module
 
 from config import LOG_CHANNEL, ON_HEROKU, CLONE_MODE, PORT, AUTH_CHANNEL, DEF_CAP
 from Script import script
 from plugins.clone import restart_bots
 from TechVJ.server import web_server
-from TechVJ.bot import StreamBot
 from TechVJ.utils.keepalive import ping_server
 from TechVJ.bot.clients import initialize_clients
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from pyrogram.errors import UserNotParticipant, FloodWait
 
 # Logging configuration
 logging.config.fileConfig('logging.conf')
@@ -39,10 +35,12 @@ logging.getLogger("aiohttp.web").setLevel(logging.ERROR)
 ppath = "plugins/*.py"
 files = glob.glob(ppath)
 
-StreamBot.start()
-loop = asyncio.get_event_loop()
+# Initialize StreamBot globally
+StreamBot = Client("StreamBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 async def start():
+    await StreamBot.start()
+
     print('\n')
     print('Initializing Tech VJ Bot')
     bot_info = await StreamBot.get_me()
@@ -80,23 +78,29 @@ async def start():
     print("Bot Started Powered By @TN_Bots")
     await idle()
 
-async def is_subscribed(bot, query, channel):
+async def is_subscribed(bot, user_id, channel_ids):
     btn = []
-    for id in channel:
-        chat = await bot.get_chat(int(id))
+    for channel_id in channel_ids:
         try:
-            await bot.get_chat_member(id, query.from_user.id)
-        except UserNotParticipant:
-            btn.append([InlineKeyboardButton(f'Join {chat.title}', url=chat.invite_link)])
+            chat = await bot.get_chat(channel_id)
+            invite_link = chat.invite_link or await bot.export_chat_invite_link(channel_id)
+            try:
+                await bot.get_chat_member(channel_id, user_id)
+            except UserNotParticipant:
+                btn.append([InlineKeyboardButton(f'Join {chat.title}', url=invite_link)])
+            except Exception as e:
+                logging.error(f"Error checking subscription status for {channel_id}: {e}")
         except Exception as e:
-            pass
+            logging.error(f"Error fetching chat details for {channel_id}: {e}")
     return btn
 
-@StreamBot.on_message()
+@StreamBot.on_message(filters.private)
 async def on_start(client, message):
+    if message.edit_date:
+        return  # Ignore edited messages
     if AUTH_CHANNEL:
         try:
-            btn = await is_subscribed(client, message, AUTH_CHANNEL)
+            btn = await is_subscribed(client, message.from_user.id, AUTH_CHANNEL)
             if btn:
                 username = (await client.get_me()).username
                 if len(message.command) > 1 and message.command[1]:
@@ -109,7 +113,7 @@ async def on_start(client, message):
                 )
                 return
         except Exception as e:
-            print(e)
+            logging.error(f"Error in on_start handler: {e}")
 
 @StreamBot.on_message(filters.channel)
 async def auto_edit_caption(bot, message):
@@ -137,6 +141,6 @@ async def auto_edit_caption(bot, message):
 
 if __name__ == '__main__':
     try:
-        loop.run_until_complete(start())
+        asyncio.run(start())  # Use asyncio.run to start the event loop
     except KeyboardInterrupt:
         logging.info('Service Stopped Bye 👋')
